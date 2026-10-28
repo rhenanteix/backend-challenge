@@ -1,5 +1,6 @@
 
-import Decimal from 'decimal.js';
+import { Decimal } from 'decimal.js';
+import { DomainError } from '../shared/domain-error.js';
 
 export interface MoneyProps {
   amount: string;
@@ -14,31 +15,52 @@ export class Money {
 
   static from(props: MoneyProps): Money {
     if (!/^(0|[1-9]\d*)(\.\d{1,2})?$/.test(props.amount)) {
-      throw new Error('INVALID_MONEY_AMOUNT');
+      throw new DomainError('INVALID_MONEY_AMOUNT');
     }
 
     if (!/^[A-Z]{3}$/.test(props.currency)) {
-      throw new Error('INVALID_CURRENCY');
+      throw new DomainError('INVALID_CURRENCY');
     }
 
-    const value = new Decimal(props.amount);
+    return new Money(
+      new Decimal(props.amount),
+      props.currency,
+    );
+  }
 
-    return new Money(value, props.currency);
+  // Usado para reconstruir valores internos, inclusive negativos.
+  static rehydrate(props: MoneyProps): Money {
+    if (!/^-?(0|[1-9]\d*)(\.\d{1,2})?$/.test(props.amount)) {
+      throw new DomainError('INVALID_MONEY_AMOUNT');
+    }
+
+    if (!/^[A-Z]{3}$/.test(props.currency)) {
+      throw new DomainError('INVALID_CURRENCY');
+    }
+
+    return new Money(
+      new Decimal(props.amount),
+      props.currency,
+    );
   }
 
   static zero(currency: string): Money {
     return Money.from({ amount: '0.00', currency });
   }
 
+  private assertSameCurrency(other: Money): void {
+    if (this.currency !== other.currency) {
+      throw new DomainError('CURRENCY_MISMATCH');
+    }
+  }
+
   add(other: Money): Money {
     this.assertSameCurrency(other);
-
     return new Money(this.value.plus(other.value), this.currency);
   }
 
   subtract(other: Money): Money {
     this.assertSameCurrency(other);
-
     return new Money(this.value.minus(other.value), this.currency);
   }
 
@@ -77,11 +99,5 @@ export class Money {
 
   toString(): string {
     return `${this.value.toFixed(2)} ${this.currency}`;
-  }
-
-  private assertSameCurrency(other: Money): void {
-    if (this.currency !== other.currency) {
-      throw new Error('CURRENCY_MISMATCH');
-    }
   }
 }

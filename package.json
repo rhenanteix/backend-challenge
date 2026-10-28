@@ -22,9 +22,9 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
     "db:migrate": "mikro-orm migration:up",
     "db:rollback": "mikro-orm migration:down",
-    "db:status": "mikro-orm migration:list"
+    "db:status": "mikro-orm migration:list",
+    "typecheck": "bun check"
   },
-  
   "mikro-orm": {
     "configPaths": [
       "./src/mikro-orm.config.ts",
@@ -73,6 +73,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.0.0",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.2",
+    "@types/bun": "latest"
   }
 }
