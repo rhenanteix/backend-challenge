@@ -107,3 +107,17 @@ export class CreateWallet {
     });
   }
 }
+
+export async function lockIdempotencyKey(
+  tx: EntityManager,
+  key: string,
+): Promise<void> {
+  await tx.getConnection().execute(
+    `SELECT pg_advisory_xact_lock(
+      hashtextextended(?, 0)
+    )`,
+    [key],
+    'all',
+    tx.getTransactionContext(),
+  );
+}

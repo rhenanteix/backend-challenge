@@ -14,6 +14,7 @@ import {
 import { ReversalPolicy } from '../../domain/wagering/reversal-policy.js';
 import { LedgerDirection } from '../../domain/wallet/wallet-ledger-entry.js';
 import { createPayloadHash } from './payload-hash.js';
+import { lockIdempotencyKey } from '../../shared/database/idempotency-lock.js';
 import type {
   ProcessWagerInput,
   ProcessWagerResult,
@@ -55,7 +56,19 @@ type TxRow = {
 export class ProcessWagerTransaction {
   constructor(private readonly em: EntityManager) {}
 
-  async execute(
+  async execute(input: ProcessWagerInput): Promise<ProcessWagerResult> {
+    return this.em.transactional((tx) =>
+      this.executeInTransaction(tx, input),
+    );
+  }
+
+  /**
+   * Participa da transação aberta pelo consumidor SQS.
+   * NÃO abre uma nova transação, pois Inbox e operação financeira
+   * precisam compartilhar o mesmo commit.
+   */
+  async executeInTransaction(
+    tx: EntityManager,
     input: ProcessWagerInput,
   ): Promise<ProcessWagerResult> {
     if (!input.idempotencyKey?.trim()) {
@@ -69,7 +82,51 @@ export class ProcessWagerTransaction {
     const money = Money.from(input.money);
     const hash = createPayloadHash(input);
 
-    // Validação antes de iniciar o trabalho financeiro.
+    // Serializa concorrência por chave E por ID externo, inclusive
+    // quando duas requisições apontam para wallets distintas.
+    await lockIdempotencyKey(
+      tx,
+      input.idempotencyKey,
+    );
+
+    const db = {
+      execute: <T = unknown>(
+        sql: string,
+        params: unknown[] = [],
+      ): Promise<T> =>
+        tx.getConnection().execute(
+          sql,
+          params,
+          'all',
+          tx.getTransactionContext(),
+        ) as Promise<T>,
+    };
+
+    // Replay antes de bloquear a wallet: devolve resultado histórico
+    // sem depender do saldo corrente ou do estado atual da wallet.
+    const existing = await db.execute<TxRow[]>(
+      `SELECT * FROM wager_transactions WHERE idempotency_key = ?`,
+      [input.idempotencyKey],
+    );
+
+    if (existing.length) {
+      if (existing[0].payload_hash !== hash) {
+        throw new DomainError('IDEMPOTENCY_CONFLICT');
+      }
+      return this.replay(existing[0]);
+    }
+
+    const sameExternal = await db.execute<TxRow[]>(
+      `SELECT * FROM wager_transactions
+       WHERE provider_id = ? AND external_transaction_id = ?`,
+      [input.providerId, input.externalTransactionId],
+    );
+
+    if (sameExternal.length) {
+      throw new DomainError('EXTERNAL_TRANSACTION_CONFLICT');
+    }
+
+    // Validação de domínio somente para novas operações.
     const operation = WagerTransaction.create({
       ...input,
       id: randomUUID(),
@@ -77,20 +134,6 @@ export class ProcessWagerTransaction {
       payloadHash: hash,
       createdAt: new Date(),
     });
-
-    return this.em.transactional(async tx => {
-      const db = {
-  execute: <T = unknown>(
-    sql: string,
-    params: unknown[] = [],
-  ): Promise<T> =>
-    tx.getConnection().execute(
-      sql,
-      params,
-      'all',
-      tx.getTransactionContext(),
-    ) as Promise<T>,
-};
 
       // Serializa operações da mesma wallet.
       const wallets = await db.execute<WalletRow[]>(
@@ -107,32 +150,6 @@ export class ProcessWagerTransaction {
 
       if (row.currency !== money.currency) {
         throw new DomainError('CURRENCY_MISMATCH');
-      }
-
-      // Replays precisam devolver o saldo original.
-      const existing = await db.execute<TxRow[]>(
-        `SELECT * FROM wager_transactions
-         WHERE idempotency_key = ?`,
-        [input.idempotencyKey],
-      );
-
-      if (existing.length) {
-        if (existing[0].payload_hash !== hash) {
-          throw new DomainError('IDEMPOTENCY_CONFLICT');
-        }
-        return this.replay(existing[0], row);
-      }
-
-      // Impede reutilização de ID externo com outra chave.
-      const sameExternal = await db.execute<TxRow[]>(
-        `SELECT * FROM wager_transactions
-         WHERE provider_id = ?
-           AND external_transaction_id = ?`,
-        [input.providerId, input.externalTransactionId],
-      );
-
-      if (sameExternal.length) {
-        throw new DomainError('EXTERNAL_TRANSACTION_CONFLICT');
       }
 
       const wallet = Wallet.rehydrate({
@@ -338,7 +355,6 @@ export class ProcessWagerTransaction {
         failureCode,
         idempotentReplay: false,
       };
-    });
   }
 
   private hydrate(row: TxRow): WagerTransaction {
@@ -368,12 +384,12 @@ export class ProcessWagerTransaction {
     });
   }
 
-  private replay(row: TxRow, wallet: WalletRow): ProcessWagerResult {
+  private replay(row: TxRow): ProcessWagerResult {
     return {
       transactionId: row.id,
       status: row.status as ProcessWagerResult['status'],
       balance: {
-        amount: row.result_balance ?? wallet.balance,
+        amount: row.result_balance ?? (() => { throw new DomainError('HISTORICAL_BALANCE_MISSING'); })(),
         currency: row.currency,
       },
       failureCode: row.failure_code ?? undefined,
@@ -410,6 +426,8 @@ export class ProcessWagerTransaction {
         }),
         occurredAt,
       ],
+      'all',
+      tx.getTransactionContext(),
     );
   }
 }

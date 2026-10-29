@@ -25,6 +25,23 @@
           "enumItems": [],
           "mappedType": "string"
         },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "text"
+        },
         "message_id": {
           "name": "message_id",
           "type": "varchar(255)",
@@ -61,6 +78,23 @@
         },
         "processed_at": {
           "name": "processed_at",
+          "type": "timestamptz(6)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 6,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "collation": null,
+          "enumItems": [],
+          "mappedType": "datetime"
+        },
+        "processing_started_at": {
+          "name": "processing_started_at",
           "type": "timestamptz(6)",
           "unsigned": false,
           "autoincrement": false,
@@ -262,6 +296,18 @@
           "composite": true,
           "constraint": false,
           "keyName": "idx_outbox_pending",
+          "primary": false,
+          "unique": false,
+          "where": "published_at IS NULL"
+        },
+        {
+          "columnNames": [
+            "next_attempt_at",
+            "occurred_at"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "idx_outbox_pending_v6",
           "primary": false,
           "unique": false,
           "where": "published_at IS NULL"
@@ -679,6 +725,18 @@
         },
         {
           "columnNames": [
+            "next_attempt_at",
+            "created_at"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "idx_wager_pending_retry_v6",
+          "primary": false,
+          "unique": false,
+          "where": "(status)::text = 'PENDING_REFERENCE'::text"
+        },
+        {
+          "columnNames": [
             "wallet_id",
             "created_at"
           ],
@@ -700,12 +758,33 @@
         },
         {
           "columnNames": [
+            "idempotency_key"
+          ],
+          "composite": false,
+          "constraint": false,
+          "keyName": "uq_wager_idempotency_v6",
+          "primary": false,
+          "unique": true
+        },
+        {
+          "columnNames": [
             "provider_id",
             "external_transaction_id"
           ],
           "composite": true,
           "constraint": true,
           "keyName": "uq_wager_provider_external",
+          "primary": false,
+          "unique": true
+        },
+        {
+          "columnNames": [
+            "provider_id",
+            "external_transaction_id"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "uq_wager_provider_external_v6",
           "primary": false,
           "unique": true
         },

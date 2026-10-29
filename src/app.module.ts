@@ -5,6 +5,7 @@ import { MikroOrmModule } from '@mikro-orm/nestjs';
 
 import mikroOrmConfig from './infrastructure/database/mikro-orm.config.js';
 import { HttpModule } from './interfaces/http/http.module.js';
+import { MessagingModule } from './infrastructure/messaging/messaging.module.js';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { HttpModule } from './interfaces/http/http.module.js';
     }),
     MikroOrmModule.forRoot(mikroOrmConfig),
     HttpModule,
+    MessagingModule,
   ],
 })
 export class AppModule {}
