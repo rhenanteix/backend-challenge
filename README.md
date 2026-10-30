@@ -1,126 +1,333 @@
+
 <p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
+  <img
+    src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSsX_LICuvCuBGhFpeM7s2e4cCSpHWCwJlQGHdFNEwuZw&s=10"
+    alt="Jungle Gaming"
+    width="250"
+  />
 </p>
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+# Jungle Gaming — Wagering & Wallet Backend
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Backend para processamento de transações financeiras de jogos, com foco em consistência de saldo, idempotência, rastreabilidade e processamento assíncrono confiável.
 
-## Description
+## Stack
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+- TypeScript
+- NestJS
+- PostgreSQL
+- MikroORM
+- AWS SQS FIFO (LocalStack para desenvolvimento)
+- Docker Compose
+- Vitest
+- Bun
 
-## Project setup
+## Arquitetura
 
-```bash
-$ bun install
-```
+O projeto organiza suas responsabilidades em camadas:
 
-## Compile and run the project
+- **Domain:** regras de negócio, Money, Wallet, transações e Ledger.
+- **Application:** casos de uso, consultas e orquestração.
+- **Infrastructure:** persistência, mensageria, workers e integrações.
+- **Interfaces:** controllers HTTP, DTOs e validação.
 
-```bash
-# development
-$ bun run start
+O processamento financeiro é realizado dentro de transações de banco de dados para manter a consistência entre saldo, transação e lançamentos contábeis.
 
-# watch mode
-$ bun run start:dev
+## Funcionalidades
 
-# production mode
-$ bun run start:prod
-```
+- Criação e consulta de carteiras
+- Consulta de lançamentos financeiros
+- Processamento de BET e demais operações suportadas pelo domínio
+- Idempotência por chave de requisição
+- Controle de concorrência sobre carteiras
+- Ledger financeiro
+- Processamento assíncrono com SQS FIFO
+- Inbox para controle de mensagens processadas
+- Outbox para eventos de integração
+- Retry para falhas transitórias
+- Dead Letter Queue para mensagens não processáveis
+- Reconciliação financeira
+- Health checks
 
-## Run tests
+## Pré-requisitos
 
-```bash
-# unit tests
-$ bun run test
+- Docker e Docker Compose
+- Node.js compatível com o projeto
+- Bun
+- AWS CLI para testes manuais com LocalStack
 
-# e2e tests
-$ bun run test:e2e
+## Configuração
 
-# test coverage
-$ bun run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Copie o arquivo de exemplo:
 
 ```bash
-$ bun install -g @nestjs/mau
-$ mau deploy
+cp .env.example .env
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Configure as variáveis de ambiente:
 
-## Observability
+```dotenv
+NODE_ENV=development
+PORT=3000
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_NAME=jungle_wagering
+DATABASE_USER=jungle
+DATABASE_PASSWORD=jungle_dev_password
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
+SQS_ENDPOINT=http://localhost:4566
+SQS_QUEUE_NAME=wager-transactions.fifo
+SQS_DLQ_NAME=wager-transactions-dlq.fifo
 
-This project is already instrumented. To connect it, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
+SQS_CONSUMER_ENABLED=true
+```
+
+As credenciais apresentadas são destinadas exclusivamente ao ambiente local de desenvolvimento.
+
+## Inicialização
+
+### 1. Subir a infraestrutura
 
 ```bash
-$ npx @nestjs/observe link
+docker compose up -d
 ```
 
-It writes the app key and secret into `.env` and makes every `nest start` script (`start`, `start:dev`, `start:debug`) load it. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
+A infraestrutura disponibiliza PostgreSQL e LocalStack.
 
-Or do it by hand: create an application and an API key at [observe.nestjs.com](https://observe.nestjs.com), and set the pair as `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment the app runs in.
+O script `docker/localstack/init-sqs.sh` provisiona:
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
+- `wager-transactions.fifo`
+- `wager-transactions-dlq.fifo`
 
-## Resources
+A fila principal utiliza:
 
-Check out a few resources that may come in handy when working with NestJS:
+- FIFO habilitado
+- Visibility timeout de 60 segundos
+- Redrive policy com `maxReceiveCount=5`
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+### 2. Instalar dependências
 
-## Support
+```bash
+bun install
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+### 3. Executar migrations
 
-## Stay in touch
+```bash
+bun run db:migrate
+```
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+Para consultar as migrations:
 
-## License
+```bash
+bun run db:status
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### 4. Iniciar a aplicação
+
+```bash
+bun run start:dev
+```
+
+A aplicação estará disponível em:
+
+`http://localhost:3000`
+
+## Endpoints HTTP
+
+| Método | Endpoint | Finalidade |
+|---|---|---|
+| GET | `/health/live` | Verificar disponibilidade do processo |
+| GET | `/health/ready` | Verificar prontidão |
+| POST | `/wallets` | Criar carteira |
+| GET | `/wallets/:walletId` | Consultar carteira |
+| GET | `/wallets/:walletId/ledger` | Consultar Ledger |
+| POST | `/wallets/:walletId/reconciliation` | Executar reconciliação |
+| POST | `/wagering/transactions` | Processar transação |
+| GET | `/wagering/transactions/:transactionId` | Consultar transação |
+| GET | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consultar transação por referência externa |
+
+## Exemplo de criação de carteira
+
+```bash
+curl -X POST http://localhost:3000/wallets \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playerId": "8c2578d1-9bc8-4f38-98f8-0f7e90d5422a",
+    "currency": "BRL",
+    "initialBalance": "100.00"
+  }'
+```
+
+Utilize o identificador da carteira retornado na resposta para realizar transações.
+
+## Exemplo de BET
+
+```bash
+curl -X POST http://localhost:3000/wagering/transactions \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: bet-example-001" \
+  -d '{
+    "providerId": "jungle-provider",
+    "externalTransactionId": "bet-example-001",
+    "playerId": "8c2578d1-9bc8-4f38-98f8-0f7e90d5422a",
+    "walletId": "SUBSTITUA_PELO_WALLET_ID",
+    "roundId": "round-example-001",
+    "gameId": "slot-example",
+    "kind": "BET",
+    "money": {
+      "amount": "10.00",
+      "currency": "BRL"
+    }
+  }'
+```
+
+A chave `Idempotency-Key` permite reconhecer requisições repetidas, evitando a duplicação de movimentações financeiras.
+
+## Consistência financeira
+
+O domínio utiliza um objeto `Money` baseado em Decimal para evitar operações monetárias com ponto flutuante binário.
+
+As movimentações seguem regras de validação de:
+
+- Valor positivo
+- Moeda compatível
+- Saldo suficiente
+- Identidade da carteira e do jogador
+- Consistência da transação
+
+Cada movimentação financeira registra seu efeito no Ledger, permitindo auditoria e reconciliação.
+
+## Idempotência e concorrência
+
+O processamento utiliza identificadores externos e chaves de idempotência para reconhecer operações repetidas.
+
+A persistência transacional e os mecanismos de bloqueio impedem que operações concorrentes alterem o mesmo saldo de maneira inconsistente.
+
+## Processamento SQS
+
+O consumidor recebe eventos de transação da fila FIFO.
+
+Fluxo resumido:
+
+1. Receber mensagem.
+2. Validar envelope e payload.
+3. Registrar ou consultar a mensagem no Inbox.
+4. Executar o processamento financeiro.
+5. Atualizar o estado do Inbox.
+6. Confirmar a transação no banco.
+7. Remover a mensagem da fila após o commit.
+
+Falhas transitórias permitem uma nova tentativa de entrega.
+
+Mensagens classificadas como permanentemente inválidas são encaminhadas para quarentena na DLQ.
+
+O SQS também possui redrive policy configurada para mensagens que excedam o limite de recebimentos.
+
+## Testes
+
+### Testes unitários
+
+```bash
+bunx vitest run src tests/unit
+```
+
+### Testes de integração
+
+Requerem PostgreSQL, LocalStack e o consumidor da aplicação em execução.
+
+```bash
+bunx vitest run \
+  --config vitest.config.integration.ts
+```
+
+Os cenários de integração incluem:
+
+- Ciclo financeiro de transações
+- Idempotência
+- Concorrência
+- Resiliência do consumidor
+- Retry e recuperação de dependências
+- Disponibilidade da API
+
+### Verificações estáticas
+
+```bash
+bunx tsc --noEmit
+bun run lint
+bun run build
+```
+
+## Decisões técnicas
+
+### PostgreSQL como fonte de verdade
+
+O banco de dados é responsável pela persistência consistente dos saldos e das movimentações.
+
+### Ledger financeiro
+
+Os lançamentos permitem verificar como o saldo de uma carteira foi formado.
+
+### SQS FIFO
+
+A fila FIFO fornece ordenação dentro de cada grupo de mensagens e recursos de deduplicação no transporte.
+
+A idempotência financeira permanece garantida pela aplicação e pelo banco, não apenas pela fila.
+
+### Inbox
+
+Controla o processamento de mensagens e reduz o risco de efeitos duplicados em reentregas.
+
+### Outbox
+
+Permite persistir eventos de integração junto às operações de negócio.
+
+A publicação efetiva desses eventos depende do mecanismo de despacho configurado na aplicação.
+
+## Referências técnicas
+
+O desenvolvimento foi acompanhado de pesquisas em documentações oficiais e discussões da comunidade, com foco em consistência financeira, concorrência, tipagem estática e mensageria confiável.
+
+### Documentação oficial
+
+- [NestJS — Validation](https://docs.nestjs.com/application/validation)
+- [NestJS — Exception Filters](https://docs.nestjs.com/exception-filters)
+- [TypeScript — Type Assertions](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions)
+- [MikroORM — Transactions and Concurrency](https://mikro-orm.io/docs/transactions)
+- [MikroORM — Migrations](https://mikro-orm.io/docs/migrations)
+- [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)
+- [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+- [PostgreSQL — INSERT / ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html)
+- [AWS — SQS FIFO Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html)
+- [AWS — Visibility Timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
+- [AWS — Dead-Letter Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
+- [LocalStack — SQS](https://docs.localstack.cloud/aws/services/sqs/)
+- [Vitest — Guide](https://vitest.dev/guide/)
+- [Decimal.js — API](https://mikemcl.github.io/decimal.js/)
+
+### Discussões técnicas e padrões arquiteturais
+
+- [Stack Overflow — TypeScript Generic Record Type](https://stackoverflow.com/questions/57280207/typescript-cannot-cast-down-to-generic-recordstring-string-type)
+- [GitHub — Slonik Issue #452](https://github.com/gajus/slonik/issues/452)
+- [Microservices.io — Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html)
+- [Microservices.io — Idempotent Consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html)
+
+### Critérios de implementação
+
+As referências servem como base de estudo, investigação e comparação de alternativas. As decisões técnicas do projeto são validadas por testes automatizados, verificações estáticas e testes de integração com PostgreSQL e SQS via LocalStack.
+
+## Observações
+
+O ambiente Docker/LocalStack é destinado ao desenvolvimento e à execução local dos testes.
+
+Antes de utilizar a solução em produção, é necessário configurar credenciais seguras, observabilidade, políticas de acesso e infraestrutura apropriada.
+
+
+## Licença
+
+Projeto desenvolvido como desafio técnico para avaliação.
