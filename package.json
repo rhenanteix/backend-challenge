@@ -20,6 +20,8 @@
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "test:load": "node scripts/run-load.mjs",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "db:migrate": "mikro-orm migration:up",
     "db:rollback": "mikro-orm migration:down",
     "db:status": "mikro-orm migration:list",
