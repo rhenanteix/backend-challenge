@@ -1,333 +1,128 @@
-
 <p align="center">
-  <img
-    src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSsX_LICuvCuBGhFpeM7s2e4cCSpHWCwJlQGHdFNEwuZw&s=10"
-    alt="Jungle Gaming"
-    width="250"
-  />
+  <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSsX_LICuvCuBGhFpeM7s2e4cCSpHWCwJlQGHdFNEwuZw&amp;s=10" alt="Jungle Gaming" width="250" />
 </p>
 
-# Jungle Gaming — Wagering & Wallet Backend
+Jungle Gaming — Wagering & Wallet Backend
+Backend para processamento de movimentações de carteiras de jogadores, com ênfase em consistência financeira, idempotência, concorrência e mensageria assíncrona.
+Escopo: projeto de desafio técnico. A infraestrutura e as credenciais apresentadas são destinadas exclusivamente ao ambiente local.
 
-Backend para processamento de transações financeiras de jogos, com foco em consistência de saldo, idempotência, rastreabilidade e processamento assíncrono confiável.
-
-## Stack
-
-- TypeScript
-- NestJS
-- PostgreSQL
-- MikroORM
-- AWS SQS FIFO (LocalStack para desenvolvimento)
-- Docker Compose
-- Vitest
-- Bun
-
-## Arquitetura
-
-O projeto organiza suas responsabilidades em camadas:
-
-- **Domain:** regras de negócio, Money, Wallet, transações e Ledger.
-- **Application:** casos de uso, consultas e orquestração.
-- **Infrastructure:** persistência, mensageria, workers e integrações.
-- **Interfaces:** controllers HTTP, DTOs e validação.
-
-O processamento financeiro é realizado dentro de transações de banco de dados para manter a consistência entre saldo, transação e lançamentos contábeis.
-
-## Funcionalidades
-
-- Criação e consulta de carteiras
-- Consulta de lançamentos financeiros
-- Processamento de BET e demais operações suportadas pelo domínio
-- Idempotência por chave de requisição
-- Controle de concorrência sobre carteiras
-- Ledger financeiro
-- Processamento assíncrono com SQS FIFO
-- Inbox para controle de mensagens processadas
-- Outbox para eventos de integração
-- Retry para falhas transitórias
-- Dead Letter Queue para mensagens não processáveis
-- Reconciliação financeira
-- Health checks
-
-## Pré-requisitos
-
+Tecnologias
+TypeScript, NestJS, PostgreSQL, MikroORM, AWS SQS FIFO (emulado com LocalStack), Docker Compose, Vitest e Bun.
+Pré-requisitos
 - Docker e Docker Compose
-- Node.js compatível com o projeto
-- Bun
-- AWS CLI para testes manuais com LocalStack
+- Node.js e Bun compatíveis com as versões declaradas no projeto
+- AWS CLI (opcional, para inspecionar as filas manualmente)
+Configuração e execução
+1. Instale as dependências e prepare as variáveis de ambiente:
+   bun install
+   cp .env.example .env
+2. Verifique os valores do .env. As configurações locais compartilhadas no desafio são:
+   NODE_ENV=development
+   PORT=3000
+   
+   DATABASE_HOST=localhost
+   DATABASE_PORT=5432
+   DATABASE_NAME=jungle_wagering
+   DATABASE_USER=jungle
+   DATABASE_PASSWORD=jungle_dev_password
+   
+   AWS_REGION=us-east-1
+   AWS_ACCESS_KEY_ID=test
+   AWS_SECRET_ACCESS_KEY=test
+   SQS_ENDPOINT=http://localhost:4566
+   SQS_QUEUE_NAME=wager-transactions.fifo
+   SQS_DLQ_NAME=wager-transactions-dlq.fifo
+   SQS_CONSUMER_ENABLED=true
+   Atenção: SQS_CONSUMER_ENABLED foi identificada no worker, mas não constava do .env.example compartilhado. Inclua-a no arquivo de exemplo após confirmar a configuração do módulo de mensageria. Não utilize essas credenciais em produção.
+3. Suba os serviços, execute as migrations e inicie a API:
+   docker compose up -d
+   bun run db:migrate
+   bun run start:dev
+   Por padrão, a API responde em http://localhost:3000. O provisionamento das filas depende da configuração de inicialização do LocalStack no Docker Compose. O script conhecido é docker/localstack/init-sqs.sh.
+Filas locais
+- Principal: wager-transactions.fifo
+- DLQ: wager-transactions-dlq.fifo
+- VisibilityTimeout: 60 segundos
+- maxReceiveCount: 5
+A política de redrive e as configurações FIFO estão no script docker/localstack/init-sqs.sh.
+Endpoints
+Método	Caminho	Finalidade
+GET	/health/live	Liveness
+GET	/health/ready	Readiness
+POST	/wallets	Criar carteira
+GET	/wallets/:walletId	Consultar carteira
+GET	/wallets/:walletId/ledger	Consultar lançamentos
+POST	/wallets/:walletId/reconciliation	Solicitar reconciliação
+POST	/wagering/transactions	Processar transação
+GET	/wagering/transactions/:transactionId	Consultar transação
+GET	/providers/:providerId/wagering/transactions/:externalTransactionId	Consultar por referência externa
 
-## Configuração
 
-Copie o arquivo de exemplo:
-
-```bash
-cp .env.example .env
-```
-
-Configure as variáveis de ambiente:
-
-```dotenv
-NODE_ENV=development
-PORT=3000
-
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_NAME=jungle_wagering
-DATABASE_USER=jungle
-DATABASE_PASSWORD=jungle_dev_password
-
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=test
-AWS_SECRET_ACCESS_KEY=test
-
-SQS_ENDPOINT=http://localhost:4566
-SQS_QUEUE_NAME=wager-transactions.fifo
-SQS_DLQ_NAME=wager-transactions-dlq.fifo
-
-SQS_CONSUMER_ENABLED=true
-```
-
-As credenciais apresentadas são destinadas exclusivamente ao ambiente local de desenvolvimento.
-
-## Inicialização
-
-### 1. Subir a infraestrutura
-
-```bash
-docker compose up -d
-```
-
-A infraestrutura disponibiliza PostgreSQL e LocalStack.
-
-O script `docker/localstack/init-sqs.sh` provisiona:
-
-- `wager-transactions.fifo`
-- `wager-transactions-dlq.fifo`
-
-A fila principal utiliza:
-
-- FIFO habilitado
-- Visibility timeout de 60 segundos
-- Redrive policy com `maxReceiveCount=5`
-
-### 2. Instalar dependências
-
-```bash
-bun install
-```
-
-### 3. Executar migrations
-
-```bash
-bun run db:migrate
-```
-
-Para consultar as migrations:
-
-```bash
-bun run db:status
-```
-
-### 4. Iniciar a aplicação
-
-```bash
-bun run start:dev
-```
-
-A aplicação estará disponível em:
-
-`http://localhost:3000`
-
-## Endpoints HTTP
-
-| Método | Endpoint | Finalidade |
-|---|---|---|
-| GET | `/health/live` | Verificar disponibilidade do processo |
-| GET | `/health/ready` | Verificar prontidão |
-| POST | `/wallets` | Criar carteira |
-| GET | `/wallets/:walletId` | Consultar carteira |
-| GET | `/wallets/:walletId/ledger` | Consultar Ledger |
-| POST | `/wallets/:walletId/reconciliation` | Executar reconciliação |
-| POST | `/wagering/transactions` | Processar transação |
-| GET | `/wagering/transactions/:transactionId` | Consultar transação |
-| GET | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consultar transação por referência externa |
-
-## Exemplo de criação de carteira
-
-```bash
+Os contratos detalhados de resposta, paginação e erros devem ser conferidos nos DTOs e controllers.
+Exemplo: criar carteira
 curl -X POST http://localhost:3000/wallets \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
     "playerId": "8c2578d1-9bc8-4f38-98f8-0f7e90d5422a",
     "currency": "BRL",
     "initialBalance": "100.00"
   }'
-```
-
-Utilize o identificador da carteira retornado na resposta para realizar transações.
-
-## Exemplo de BET
-
-```bash
+Guarde o identificador da carteira retornado.
+Exemplo: processar uma BET
+Substitua WALLET_UUID pelo identificador retornado na criação da carteira.
 curl -X POST http://localhost:3000/wagering/transactions \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: bet-example-001" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-bet-001' \
   -d '{
     "providerId": "jungle-provider",
-    "externalTransactionId": "bet-example-001",
+    "externalTransactionId": "example-bet-001",
     "playerId": "8c2578d1-9bc8-4f38-98f8-0f7e90d5422a",
-    "walletId": "SUBSTITUA_PELO_WALLET_ID",
-    "roundId": "round-example-001",
-    "gameId": "slot-example",
+    "walletId": "WALLET_UUID",
+    "roundId": "round-001",
+    "gameId": "slot-001",
     "kind": "BET",
-    "money": {
-      "amount": "10.00",
-      "currency": "BRL"
-    }
+    "money": { "amount": "10.00", "currency": "BRL" }
   }'
-```
-
-A chave `Idempotency-Key` permite reconhecer requisições repetidas, evitando a duplicação de movimentações financeiras.
-
-## Consistência financeira
-
-O domínio utiliza um objeto `Money` baseado em Decimal para evitar operações monetárias com ponto flutuante binário.
-
-As movimentações seguem regras de validação de:
-
-- Valor positivo
-- Moeda compatível
-- Saldo suficiente
-- Identidade da carteira e do jogador
-- Consistência da transação
-
-Cada movimentação financeira registra seu efeito no Ledger, permitindo auditoria e reconciliação.
-
-## Idempotência e concorrência
-
-O processamento utiliza identificadores externos e chaves de idempotência para reconhecer operações repetidas.
-
-A persistência transacional e os mecanismos de bloqueio impedem que operações concorrentes alterem o mesmo saldo de maneira inconsistente.
-
-## Processamento SQS
-
-O consumidor recebe eventos de transação da fila FIFO.
-
-Fluxo resumido:
-
-1. Receber mensagem.
-2. Validar envelope e payload.
-3. Registrar ou consultar a mensagem no Inbox.
-4. Executar o processamento financeiro.
-5. Atualizar o estado do Inbox.
-6. Confirmar a transação no banco.
-7. Remover a mensagem da fila após o commit.
-
-Falhas transitórias permitem uma nova tentativa de entrega.
-
-Mensagens classificadas como permanentemente inválidas são encaminhadas para quarentena na DLQ.
-
-O SQS também possui redrive policy configurada para mensagens que excedam o limite de recebimentos.
-
-## Testes
-
-### Testes unitários
-
-```bash
+A API exige o cabeçalho Idempotency-Key no processamento HTTP. O controller remove espaços nas extremidades e rejeita chaves vazias ou maiores que 255 caracteres.
+Testes e qualidade
+Para testes de integração, mantenha PostgreSQL, LocalStack e o consumidor da API em execução.
+# Testes unitários
 bunx vitest run src tests/unit
-```
 
-### Testes de integração
+# Testes de integração
+bunx vitest run --config vitest.config.integration.ts
 
-Requerem PostgreSQL, LocalStack e o consumidor da aplicação em execução.
-
-```bash
-bunx vitest run \
-  --config vitest.config.integration.ts
-```
-
-Os cenários de integração incluem:
-
-- Ciclo financeiro de transações
-- Idempotência
-- Concorrência
-- Resiliência do consumidor
-- Retry e recuperação de dependências
-- Disponibilidade da API
-
-### Verificações estáticas
-
-```bash
+# Tipos, lint e build
 bunx tsc --noEmit
 bun run lint
 bun run build
-```
+Os cenários de integração exercitam ciclo financeiro, concorrência, idempotência, resiliência e recuperação por retry. O cenário de retry depende do timeout de visibilidade da fila e pode demorar aproximadamente um minuto.
 
-## Decisões técnicas
-
-### PostgreSQL como fonte de verdade
-
-O banco de dados é responsável pela persistência consistente dos saldos e das movimentações.
-
-### Ledger financeiro
-
-Os lançamentos permitem verificar como o saldo de uma carteira foi formado.
-
-### SQS FIFO
-
-A fila FIFO fornece ordenação dentro de cada grupo de mensagens e recursos de deduplicação no transporte.
-
-A idempotência financeira permanece garantida pela aplicação e pelo banco, não apenas pela fila.
-
-### Inbox
-
-Controla o processamento de mensagens e reduz o risco de efeitos duplicados em reentregas.
-
-### Outbox
-
-Permite persistir eventos de integração junto às operações de negócio.
-
-A publicação efetiva desses eventos depende do mecanismo de despacho configurado na aplicação.
-
-## Referências técnicas
-
-O desenvolvimento foi acompanhado de pesquisas em documentações oficiais e discussões da comunidade, com foco em consistência financeira, concorrência, tipagem estática e mensageria confiável.
-
-### Documentação oficial
-
-- [NestJS — Validation](https://docs.nestjs.com/application/validation)
-- [NestJS — Exception Filters](https://docs.nestjs.com/exception-filters)
-- [TypeScript — Type Assertions](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#type-assertions)
-- [MikroORM — Transactions and Concurrency](https://mikro-orm.io/docs/transactions)
-- [MikroORM — Migrations](https://mikro-orm.io/docs/migrations)
-- [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)
-- [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
-- [PostgreSQL — INSERT / ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html)
-- [AWS — SQS FIFO Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html)
-- [AWS — Visibility Timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
-- [AWS — Dead-Letter Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
-- [LocalStack — SQS](https://docs.localstack.cloud/aws/services/sqs/)
-- [Vitest — Guide](https://vitest.dev/guide/)
-- [Decimal.js — API](https://mikemcl.github.io/decimal.js/)
-
-### Discussões técnicas e padrões arquiteturais
-
-- [Stack Overflow — TypeScript Generic Record Type](https://stackoverflow.com/questions/57280207/typescript-cannot-cast-down-to-generic-recordstring-string-type)
-- [GitHub — Slonik Issue #452](https://github.com/gajus/slonik/issues/452)
-- [Microservices.io — Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html)
-- [Microservices.io — Idempotent Consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html)
-
-### Critérios de implementação
-
-As referências servem como base de estudo, investigação e comparação de alternativas. As decisões técnicas do projeto são validadas por testes automatizados, verificações estáticas e testes de integração com PostgreSQL e SQS via LocalStack.
-
-## Observações
-
-O ambiente Docker/LocalStack é destinado ao desenvolvimento e à execução local dos testes.
-
-Antes de utilizar a solução em produção, é necessário configurar credenciais seguras, observabilidade, políticas de acesso e infraestrutura apropriada.
-
-
-## Licença
-
-Projeto desenvolvido como desafio técnico para avaliação.
+Comandos adicionais disponíveis:
+bun run db:status
+bun run db:rollback
+bun run start:prod
+Nota: start:prod requer o build e a configuração apropriada de variáveis de ambiente.
+Arquitetura
+Consulte [ARCHITECTURE.md](./ARCHITECTURE.md) para conhecer as decisões de domínio, persistência e mensageria, bem como os trade-offs, limites de garantia e melhorias futuras.
+Referências
+Documentação oficial
+- NestJS — Validation
+- TypeScript — Type Assertions
+- MikroORM — Transactions
+- PostgreSQL — Explicit Locking
+- PostgreSQL — Transaction Isolation
+- AWS SQS — FIFO Queues
+- AWS SQS — Visibility Timeout
+- AWS SQS — Dead-Letter Queues
+- LocalStack — SQS
+- Vitest
+- Decimal.js
+Discussões consultadas e materiais complementares
+- Stack Overflow — TypeScript e Record<string, string>
+- GitHub — Slonik issue #452
+- Transactional Outbox Pattern
+- Idempotent Consumer Pattern
+Os dois primeiros links foram compartilhados como pesquisas realizadas durante o desenvolvimento. Os demais são referências de documentação e estudo, sem implicar que cada solução tenha sido copiada ou implementada integralmente.
+Licença
+Projeto de desafio técnico para avaliação. Consulte as condições de uso e distribuição definidas pelo responsável pelo repositório.
