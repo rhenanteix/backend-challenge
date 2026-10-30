@@ -1,136 +1,319 @@
-Arquitetura — Jungle Gaming Wagering & Wallet Backend
-1. Objetivos e princípios
-A solução prioriza integridade de saldos, rastreabilidade de movimentações e processamento idempotente de eventos financeiros. O PostgreSQL é a fonte de verdade para estado de carteiras e lançamentos; a fila SQS desacopla a recepção assíncrona da execução transacional.
 
-Os objetivos principais são:
-- Evitar lançamentos duplicados em requisições repetidas ou mensagens reentregues.
-- Manter carteira, transação e Ledger consistentes na mesma operação de banco.
-- Serializar modificações concorrentes sobre a mesma carteira.
-- Registrar e recuperar falhas de integração sem perder a rastreabilidade.
-- Permitir testes locais reprodutíveis com PostgreSQL e LocalStack.
-2. Organização em camadas
-Camada	Responsabilidade	Exemplos
-Domain	Invariantes financeiras e entidades	Money, Wallet, WalletLedgerEntry, WagerTransaction
-Application	Casos de uso e consultas	ProcessWagerTransaction, WagerQueries
-Infrastructure	Persistência, mensageria e integração	MikroORM, consumidor SQS, Inbox/Outbox
-Interfaces	Entrada e validação HTTP	Controllers, DTOs, pipes
+# Arquitetura — Jungle Gaming Wagering & Wallet Backend
 
+**Estado da documentação:** revisão de entrega, 30/10/2026. Este documento descreve decisões e evidências relatadas no desenvolvimento local; métricas observadas não constituem garantias de produção.
 
-A separação reduz o acoplamento entre regras financeiras e transporte HTTP/SQS. A infraestrutura ainda é uma implementação específica; não se pressupõe que todos os adaptadores possam ser substituídos sem trabalho adicional.
-3. Fluxo de processamento
-Requisição HTTP
-Cliente
-  -> Controller + validação
-  -> Caso de uso ProcessWagerTransaction
-  -> Transação PostgreSQL
-      -> verificação de idempotência
-      -> bloqueio/controle de concorrência
-      -> validações de domínio
-      -> atualização da carteira
-      -> transação financeira + Ledger + registro de Outbox
-  -> commit
-  -> resposta
-Evento SQS
-SQS FIFO
-  -> Consumer
-  -> validação do envelope
+## 1. Objetivos e princípios
+
+O sistema processa movimentações financeiras de carteiras de jogadores com ênfase em:
+
+1. **Integridade financeira:** saldo, transação, Ledger e eventos persistidos de forma consistente.
+2. **Idempotência:** reenvios HTTP e reentregas SQS não devem reaplicar o mesmo efeito financeiro.
+3. **Concorrência segura:** modificações na mesma carteira precisam respeitar bloqueios e invariantes.
+4. **Rastreabilidade:** registrar movimentações, referências externas e eventos de integração.
+5. **Recuperação:** distinguir falhas transitórias e permanentes, com retry e DLQ.
+6. **Reprodutibilidade local:** PostgreSQL, LocalStack, Docker Compose e suítes automatizadas.
+
+O **PostgreSQL é a fonte de verdade**. SQS desacopla recepção e publicação de mensagens, mas não substitui transações, constraints ou idempotência de negócio.
+
+## 2. Componentes e camadas
+
+| Camada | Responsabilidade | Exemplos |
+| --- | --- | --- |
+| Domain | Invariantes, entidades e valores monetários | `Money`, `Wallet`, `WalletLedgerEntry`, `WagerTransaction` |
+| Application | Casos de uso, coordenação transacional e consultas | `ProcessWagerTransaction`, consultas financeiras |
+| Infrastructure | Persistência, filas, workers e integração | MikroORM, PostgreSQL, SQS, Inbox, Outbox |
+| Interfaces | Entrada HTTP, validação e tratamento de erros | Controllers, DTOs, pipes e filtros |
+
+### Visão lógica
+
+```text
+                         +----------------------+
+                         |      Cliente HTTP    |
+                         +----------+-----------+
+                                    |
+                                    v
+                         +----------------------+
+                         | NestJS / Controllers |
+                         | DTOs / Validation   |
+                         +----------+-----------+
+                                    |
+                                    v
++------------------+     +----------------------+     +------------------+
+| SQS FIFO entrada | --> | Consumer / Use Case  | --> | PostgreSQL       |
+| wager-transactions|    | ProcessWagerTransaction |   | Wallet / Ledger  |
++------------------+     +----------------------+     | Transactions     |
+                                                     | Inbox / Outbox   |
+                                                     +---------+--------+
+                                                               |
+                                                               v
+                                                     +------------------+
+                                                     | Outbox Publisher |
+                                                     +---------+--------+
+                                                               |
+                                                               v
+                                                     +------------------+
+                                                     | SQS eventos FIFO |
+                                                     +------------------+
+```
+
+O desenho é conceitual: API e consumer reutilizam o processamento de negócio; o publisher trabalha de forma assíncrona sobre registros Outbox persistidos.
+
+## 3. Fluxos transacionais
+
+### 3.1 Requisição HTTP
+
+```text
+POST /wagering/transactions
+  -> validação do DTO e cabeçalho Idempotency-Key
+  -> caso de uso de processamento
   -> transação PostgreSQL
-      -> Inbox (detecção de reentrega/conflito)
-      -> processamento financeiro
-      -> Inbox marcado como processado
+       -> verificar chave/referência e eventual conflito
+       -> serializar acesso concorrente à carteira
+       -> validar invariantes monetárias e de negócio
+       -> atualizar saldo e gravar transação + Ledger
+       -> persistir eventos Outbox relacionados
   -> commit
-  -> delete/ACK da mensagem
-Em falhas transitórias, a mensagem não é confirmada e pode voltar a ficar visível. Em falhas classificadas como permanentes, o consumidor tenta encaminhar a mensagem para a DLQ antes de removê-la da fila principal.
-4. Decisões e justificativas
-4.1 PostgreSQL como fonte de verdade
-Decisão: manter saldo, transações e lançamentos financeiros em um banco relacional transacional.
+  -> resposta HTTP
+```
 
-Benefício: operações atômicas e mecanismos explícitos de bloqueio e unicidade.
+Uma falha antes do commit deve impedir a persistência parcial dos efeitos financeiros associados à transação.
 
-Trade-off: contenção de locks em carteiras muito disputadas; disponibilidade do banco torna-se crítica para a operação financeira.
-4.2 Dinheiro com Decimal.js
-Decisão: encapsular valores monetários em Money e usar aritmética decimal.
+### 3.2 Mensagem SQS de entrada
 
-Benefício: evita erros típicos de ponto flutuante binário e centraliza validações de moeda e precisão.
+```text
+SQS FIFO (wager-transactions.fifo)
+  -> consumer / polling
+  -> parse e validação do envelope
+  -> transação PostgreSQL
+       -> Inbox: eventId, deduplicação e conflito de payload
+       -> processamento financeiro
+       -> marcação do evento como processado
+  -> commit
+  -> confirmação / remoção da mensagem
+```
 
-Trade-off: conversão explícita nas bordas e necessidade de preservar escala/representação ao persistir e serializar.
+- **Falha transitória:** a mensagem pode permanecer sem ACK e voltar após o timeout de visibilidade.
+- **Falha permanente:** o consumer pode encaminhar para a DLQ conforme a classificação de erros.
+- **Reentrega:** o controle persistido de Inbox/idempotência deve evitar reaplicação financeira.
 
-Invariante relevante: movimentações exigem valor estritamente maior que zero; Decimal.isPositive() considera zero não negativo, portanto a comparação correta é greaterThan(0).
-4.3 Ledger e saldo materializado
-Decisão: registrar lançamentos de débito/crédito com saldos anterior e posterior, além do saldo atual na carteira.
+O SQS oferece entrega com possibilidade de repetição; a aplicação não presume entrega única.
 
-Benefício: consultas rápidas ao saldo e trilha de auditoria para reconciliação.
+### 3.3 Publicação de eventos pelo Outbox
 
-Trade-off: a aplicação deve manter os dois modelos consistentes na mesma transação; o saldo materializado não deve ser tratado como substituto do histórico.
-4.4 Idempotência no banco
-Decisão: validar chaves de idempotência e referências externas na aplicação/persistência, independentemente da deduplicação do SQS.
+```text
+Transação financeira
+  -> INSERT de eventos Outbox na mesma transação
+  -> COMMIT
+  -> publisher periódico (~5 segundos)
+  -> SELECT de pendentes com FOR UPDATE SKIP LOCKED
+  -> lote de até 100 registros
+  -> publicação na fila SQS de eventos
+  -> marcação de published_at / controle de tentativas
+```
 
-Benefício: proteção contra reenvios HTTP e reentregas assíncronas além da janela de deduplicação do transporte.
+Na implementação examinada durante o desenvolvimento, o publisher utiliza transação e bloqueio de registros com `FOR UPDATE SKIP LOCKED`, faz envios SQS sequenciais dentro do lote e registra publicação após sucesso. O controle de tentativas prevê recuperação de falhas e backoff.
 
-Trade-off: armazenamento e consulta adicionais; conflitos de mesma chave com payload diferente exigem política explícita.
-4.5 Controle de concorrência
-Decisão: utilizar transações e bloqueios de banco no processamento financeiro; o caso de uso também usa mecanismos de serialização por chave.
+**Garantia e ressalva:** o padrão evita publicar antecipadamente eventos de uma transação financeira revertida. Uma falha entre o envio ao SQS e a confirmação local pode causar republicação; consumidores de eventos também precisam ser idempotentes. Não há transação distribuída entre PostgreSQL e SQS.
 
-Benefício: reduz o risco de dupla utilização do mesmo saldo sob concorrência.
+## 4. Decisões arquiteturais
 
-Trade-off: espera por locks, possibilidade de deadlocks e necessidade de políticas de timeout/retry em carga elevada.
-4.6 SQS FIFO e MessageGroupId
-Decisão: receber transações por fila FIFO com grupos de mensagens.
+### 4.1 PostgreSQL e atomicidade
 
-Benefício: ordenação por grupo e deduplicação no transporte.
+**Decisão:** manter saldo, Ledger, transações, Inbox e Outbox no armazenamento relacional transacional.
 
-Trade-off: mensagens com falha podem bloquear as seguintes no mesmo grupo; FIFO não substitui idempotência de negócio nem transação de banco.
-4.7 Inbox
-Decisão: persistir o identificador da mensagem e seu hash de payload no contexto do processamento transacional.
+**Motivo:** commits atômicos, unicidade e mecanismos de lock adequados à consistência financeira.
 
-Benefício: identificar reentregas, evitar reaplicação e detectar reutilização conflitante de identificadores.
+**Trade-off:** dependência da disponibilidade do banco, contenção em carteiras concorridas e possível necessidade de retries por conflito/deadlock.
 
-Trade-off: crescimento de armazenamento e necessidade de política futura de retenção, limpeza e observabilidade.
-4.8 Outbox
-Decisão: persistir registros de eventos de integração associados às operações de negócio.
+### 4.2 Valores monetários decimais
 
-Benefício: base para publicação confiável após o commit, evitando publicação antecipada de eventos de transações revertidas.
+**Decisão:** encapsular valores em `Money`, utilizando Decimal.js.
 
-Limitação de evidência: a existência de persistência Outbox não comprova, por si só, que um dispatcher com retry, confirmação de publicação e monitoramento esteja operacional. Essa capacidade deve ser verificada no código antes de ser declarada pronta.
-4.9 Retry e DLQ
-Decisão: distinguir falhas transitórias de permanentes e usar reentrega/encaminhamento à DLQ.
+**Motivo:** evitar arredondamentos típicos de ponto flutuante binário e centralizar regras de moeda/precisão.
 
-Benefício: dependências temporariamente indisponíveis podem se recuperar sem perda imediata do evento; payloads inválidos não precisam ser repetidos indefinidamente.
+**Invariante:** valores de movimentação devem ser estritamente positivos (`greaterThan(0)`); `isPositive()` isoladamente não é substituto adequado para essa regra.
 
-Trade-off: a classificação de erros exige manutenção; falhas não classificadas podem gerar tentativas desnecessárias. A política da fila local usa VisibilityTimeout=60 e maxReceiveCount=5.
-5. Garantias e limites
-Aspecto	Abordagem	Limite
-Atomicidade financeira	Transação PostgreSQL	Não engloba automaticamente sistemas externos
-Idempotência	Chaves e registros persistidos	Depende de constraints e semântica de conflitos corretas
-Ordem	SQS FIFO por grupo	Não há ordenação global entre grupos
-Entrega	SQS com reentrega	Consumidor deve tolerar entrega repetida
-Auditoria	Ledger e transações	Requer políticas de acesso e retenção
-Recuperação	Retry e DLQ	Necessita monitoramento e operação da DLQ
+**Trade-off:** conversão explícita nas fronteiras de API, banco e serialização.
 
+### 4.3 Ledger e saldo materializado
 
-A expressão exactly-once não deve ser aplicada ao sistema inteiro: o transporte pode entregar mensagens mais de uma vez. A meta é efeito financeiro idempotente com processamento transacional.
-6. Testes e verificações
-A suíte relatada durante o desenvolvimento cobriu testes unitários e cenários de integração de ciclo financeiro, concorrência, idempotência, resiliência e recuperação após disponibilização tardia de uma carteira.
-bunx vitest run src tests/unit
-bunx vitest run --config vitest.config.integration.ts
-bunx tsc --noEmit
+**Decisão:** manter saldo corrente na carteira e trilha de lançamentos com saldos anterior/posterior.
+
+**Motivo:** leitura eficiente do saldo sem perder rastreabilidade e base de reconciliação.
+
+**Trade-off:** a consistência entre saldo e Ledger deve ser garantida na mesma transação. O saldo materializado não substitui o histórico.
+
+### 4.4 Idempotência de negócio
+
+**Decisão:** usar chaves de idempotência, referências externas e registros persistidos, independentemente da deduplicação FIFO.
+
+**Motivo:** a deduplicação do transporte tem escopo e janela próprios; reenvios podem ocorrer fora dessa janela.
+
+**Trade-off:** armazenamento adicional e necessidade de distinguir replay legítimo de reutilização da mesma chave com payload diferente.
+
+### 4.5 Controle de concorrência
+
+**Decisão:** coordenar operações por chave e utilizar transações/bloqueios no PostgreSQL para proteger a carteira.
+
+**Motivo:** impedir efeitos simultâneos incompatíveis com o mesmo saldo.
+
+**Trade-off:** maior latência sob contenção, espera por locks e possibilidade de deadlock. O throughput de uma carteira muito disputada não equivale ao throughput agregado de várias carteiras.
+
+### 4.6 SQS FIFO
+
+**Decisão:** usar grupos de mensagens para ordenar operações relacionadas.
+
+**Motivo:** preservar ordenação dentro do `MessageGroupId` e oferecer deduplicação de transporte.
+
+**Trade-off:** mensagens problemáticas podem atrasar as posteriores do mesmo grupo; não existe ordenação global entre grupos.
+
+### 4.7 Transactional Inbox
+
+**Decisão:** registrar identificador e hash do payload durante o processamento transacional.
+
+**Motivo:** detectar reentregas e conflitos sem depender da memória do worker.
+
+**Trade-off:** crescimento da tabela, necessidade de índices e política de retenção/limpeza.
+
+### 4.8 Transactional Outbox
+
+**Decisão:** persistir eventos de integração junto ao efeito financeiro e publicar posteriormente por worker.
+
+**Implementado e observado:** publisher periódico, lotes, seleção com `FOR UPDATE SKIP LOCKED`, publicação SQS, controle de publicação e tentativas. Foi observado escoamento do backlog até zero em uma das verificações locais.
+
+**Limitação:** a taxa de publicação observada (~20 eventos/s) não acompanha a geração de eventos em algumas cargas sustentadas. Melhorias de paralelismo, batching de envio e observabilidade permanecem futuras.
+
+### 4.9 Retry e DLQ
+
+**Decisão:** classificar erros e permitir reentrega ou encaminhamento à DLQ.
+
+**Configuração local relatada:** `VisibilityTimeout=60s`, `maxReceiveCount=5` para a fila de entrada.
+
+**Trade-off:** retries podem atrasar o grupo FIFO; DLQ exige monitoramento e replay cuidadoso. Testes devem considerar o tempo real de visibilidade da fila.
+
+## 5. Contratos e endpoints
+
+| Método | Caminho | Responsabilidade |
+| --- | --- | --- |
+| GET | `/health/live` | Liveness sem dependência do banco |
+| GET | `/health/ready` | Readiness com `SELECT 1` no PostgreSQL |
+| POST | `/wallets` | Criação de carteira |
+| GET | `/wallets/:walletId` | Consulta de carteira |
+| GET | `/wallets/:walletId/ledger` | Consulta do Ledger |
+| POST | `/wallets/:walletId/reconciliation` | Solicitação de reconciliação |
+| POST | `/wagering/transactions` | Processamento de transação |
+| GET | `/wagering/transactions/:transactionId` | Consulta por ID |
+| GET | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consulta por referência externa |
+
+No `main.ts` analisado, a aplicação configura `ValidationPipe` com `whitelist`, `forbidNonWhitelisted` e `transform`, além de um filtro global de exceções de domínio. Não foi observado prefixo global `/api`. Os detalhes dos DTOs devem ser considerados a fonte primária dos contratos.
+
+## 6. Garantias e fronteiras
+
+| Propriedade | Mecanismo | Limitação |
+| --- | --- | --- |
+| Atomicidade financeira | Transação PostgreSQL | Não inclui automaticamente sistemas externos |
+| Idempotência | Chaves, referências, Inbox e constraints | Depende de conflitos corretamente identificados |
+| Consistência do Ledger | Mesma transação do saldo | Requer invariantes e reconciliação |
+| Ordem de mensagens | FIFO por `MessageGroupId` | Sem ordem global |
+| Entrega | SQS com retry/reentrega | Pode entregar mais de uma vez |
+| Publicação de eventos | Transactional Outbox | Pode republicar após falha parcial de confirmação |
+| Recuperação | Retry e DLQ | Exige operação e monitoramento |
+| Disponibilidade | Health checks separados | Liveness não garante dependências saudáveis |
+
+**Não declarar *exactly-once* para o sistema inteiro.** A garantia pretendida é **efeito financeiro idempotente** sobre uma infraestrutura de entrega potencialmente repetida.
+
+## 7. Estratégia de testes
+
+### 7.1 Comandos
+
+```bash
+bun run test
+bun run test:integration
+bun run test:e2e
+bun run test:load
 bun run lint
+bun run typecheck
 bun run build
-O teste de recuperação SQS depende do timeout de visibilidade e foi observado com execução de aproximadamente 61 segundos. A métrica ApproximateNumberOfMessagesNotVisible é aproximada e referente à fila inteira, não prova de recebimento de uma mensagem específica.
-7. Limitações conhecidas e melhorias propostas
-1. Isolamento dos testes SQS: testes concorrentes sobre a mesma fila podem interferir na observação de métricas e no tempo de processamento. Preferir filas/grupos isolados e asserts baseados no identificador do evento.
-2. Fixture de recuperação: a criação da carteira e o lançamento de abertura devem ocorrer numa única transação de teste, eliminando o intervalo em que a carteira existe sem o saldo e o Ledger correspondentes.
-3. Publicação Outbox: confirmar a existência de dispatcher e adicionar monitoramento, retry e testes de publicação antes de anunciar entrega de eventos ponta a ponta.
-4. Observabilidade: métricas de latência, idade de mensagens, profundidade de fila, DLQ, conflitos de idempotência e tempo de espera por locks.
-5. Operação de DLQ: estabelecer inspeção, correção de causa e replay controlado, com prevenção de efeitos duplicados.
-6. Segurança: autenticação/autorização, gestão de segredos, TLS, políticas de acesso e rate limiting devem ser avaliados antes de uso em produção.
-7. Carga e resiliência: testes de throughput, contenção de carteira, falha de banco e reinício do worker para validar os limites operacionais.
-8. Contratos de API: publicar especificação OpenAPI/Swagger e exemplos reais de respostas/erros, se ainda não disponíveis.
-9. Deploy: credenciais de desenvolvimento, LocalStack e configurações locais não representam configuração de produção.
-8. Referências
-- MikroORM — Transactions
-- PostgreSQL — Explicit Locking
-- AWS SQS — FIFO
-- AWS SQS — Visibility Timeout
-- Transactional Outbox
-- Idempotent Consumer
+```
+
+### 7.2 Validação observada em 30/10/2026
+
+| Suíte | Resultado | Exemplos de cobertura |
+| --- | ---: | --- |
+| Unitários | 26 aprovados (4 arquivos) | Regras e classificações isoladas |
+| Integração | 10 aprovados (6 arquivos) | Ciclo financeiro, concorrência, SQS, idempotência, retry, DLQ |
+| E2E | 2 aprovados | `GET /health/live`, `GET /health/ready` |
+| **Total** | **38 aprovados** | — |
+| Lint | 0 erros / 0 avisos | 53 arquivos |
+| Typecheck | Sem erros | 57 arquivos |
+| Build | Concluído | NestJS |
+
+A recuperação por timeout de visibilidade pode levar aproximadamente 60 segundos. Métricas `ApproximateNumberOfMessages*` do SQS são aproximadas e globais à fila; não devem ser usadas isoladamente como prova de processamento de um evento específico.
+
+### 7.3 Carga HTTP — k6
+
+A última execução relatada utilizou **2 VUs durante 15 segundos**:
+
+| Métrica | Valor observado |
+| --- | ---: |
+| Requisições | 1.162 |
+| Vazão | 77,37 req/s |
+| Erros HTTP | 0% |
+| p50 | 16,72 ms |
+| p95 | 50,56 ms |
+| p99 | 112,70 ms |
+| Máximo | 1,67 s |
+
+Uma execução anterior registrou **3.118 requisições em 15 segundos (207,77 req/s)**, p50 de **7,37 ms**, p95 de **18,82 ms** e 0% de erros HTTP. Como as condições não foram padronizadas para comparação controlada, não se deve concluir que uma alteração específica provocou a diferença.
+
+Os resultados representam o cenário local testado, não capacidade garantida de produção nem medida de escalabilidade horizontal.
+
+### 7.4 Throughput e atraso do Outbox
+
+O publisher passou de lotes de **20 para 100 registros**, mantendo execução periódica de aproximadamente **5 segundos**. Na observação local, o escoamento aumentou de cerca de **4 para 20 eventos/s** (5×). Os envios dentro do lote eram sequenciais.
+
+A carga de `BET` observada gerou **dois eventos por requisição bem-sucedida**. Assim, 77,37 requisições/s podem representar aproximadamente **154,74 eventos/s** de entrada no Outbox, muito acima da vazão medida do publisher. A diferença provoca crescimento de backlog durante carga sustentada.
+
+Em uma verificação, o backlog foi drenado a **zero**; em outras medições parciais após carga havia eventos pendentes, e as estatísticas de latência de publicação foram calculadas apenas sobre eventos já publicados. Por isso, não se deve tratar essas amostras parciais como percentis finais de toda a carga.
+
+A fila SQS de eventos (`wager-events.fifo`) acumulou mensagens em uma execução sem consumidor de saída; isso é distinto de registros Outbox ainda não publicados.
+
+## 8. Riscos e melhorias priorizadas
+
+| Prioridade | Tema | Próxima ação recomendada |
+| --- | --- | --- |
+| Alta | Capacidade do Outbox | Avaliar envio SQS em lote, paralelismo controlado, múltiplos publishers e medição de throughput |
+| Alta | Observabilidade | Métricas de backlog/idade do Outbox, tempo de publicação, DLQ, locks e latência |
+| Alta | Operação de DLQ | Criar processo de inspeção, classificação, correção e replay idempotente |
+| Alta | Segurança para produção | Autenticação/autorização, segredos, TLS, rate limiting e políticas de acesso |
+| Média | Isolamento de testes | Filas e grupos dedicados, fixtures independentes e assertions por ID de evento |
+| Média | Testes de resiliência | Reinício de worker, indisponibilidade do banco/SQS e recuperação de publicações |
+| Média | Contratos de API | OpenAPI/Swagger, exemplos de erros e documentação de paginação |
+| Média | Retenção de dados | Políticas para Inbox, Outbox, Ledger e auditoria conforme requisitos |
+| Média | Deploy | Configuração por ambiente, health probes, alertas e migrações controladas |
+
+Essas melhorias não devem ser confundidas com falhas nos testes concluídos: representam limites de escala, segurança e operação além do escopo local demonstrado.
+
+## 9. Reprodutibilidade e evidências
+
+- Scripts de execução e dependências: `package.json`.
+- Exemplo de ambiente: `.env.example` (validar a presença de `SQS_CONSUMER_ENABLED`).
+- Provisionamento SQS local: `docker/localstack/init-sqs.sh`.
+- Testes de integração: `tests/integration/`.
+- Testes E2E: `test/app.e2e-spec.ts`.
+- Teste de carga: `tests/load/wagering.load.js` e `scripts/run-load.mjs`.
+- Resultados de carga, quando preservados: `tests/load/results/`.
+
+Para reproduzir o ambiente, consulte o passo a passo do [README.md](./README.md). Recomenda-se executar as suítes de infraestrutura de forma sequencial e verificar a saúde do PostgreSQL e do LocalStack antes de iniciá-las.
+
+## 10. Referências
+
+- [MikroORM — Transactions](https://mikro-orm.io/docs/transactions)
+- [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)
+- [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+- [AWS SQS — FIFO](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html)
+- [AWS SQS — Visibility Timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
+- [AWS SQS — Dead-Letter Queues](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
+- [Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html)
+- [Idempotent Consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html)

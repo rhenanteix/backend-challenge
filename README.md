@@ -2,64 +2,127 @@
   <img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSsX_LICuvCuBGhFpeM7s2e4cCSpHWCwJlQGHdFNEwuZw&amp;s=10" alt="Jungle Gaming" width="250" />
 </p>
 
-Jungle Gaming — Wagering & Wallet Backend
-Backend para processamento de movimentações de carteiras de jogadores, com ênfase em consistência financeira, idempotência, concorrência e mensageria assíncrona.
-Escopo: projeto de desafio técnico. A infraestrutura e as credenciais apresentadas são destinadas exclusivamente ao ambiente local.
+# Jungle Gaming — Wagering & Wallet Backend
 
-Tecnologias
-TypeScript, NestJS, PostgreSQL, MikroORM, AWS SQS FIFO (emulado com LocalStack), Docker Compose, Vitest e Bun.
-Pré-requisitos
-- Docker e Docker Compose
-- Node.js e Bun compatíveis com as versões declaradas no projeto
-- AWS CLI (opcional, para inspecionar as filas manualmente)
-Configuração e execução
-1. Instale as dependências e prepare as variáveis de ambiente:
-   bun install
-   cp .env.example .env
-2. Verifique os valores do .env. As configurações locais compartilhadas no desafio são:
-   NODE_ENV=development
-   PORT=3000
-   
-   DATABASE_HOST=localhost
-   DATABASE_PORT=5432
-   DATABASE_NAME=jungle_wagering
-   DATABASE_USER=jungle
-   DATABASE_PASSWORD=jungle_dev_password
-   
-   AWS_REGION=us-east-1
-   AWS_ACCESS_KEY_ID=test
-   AWS_SECRET_ACCESS_KEY=test
-   SQS_ENDPOINT=http://localhost:4566
-   SQS_QUEUE_NAME=wager-transactions.fifo
-   SQS_DLQ_NAME=wager-transactions-dlq.fifo
-   SQS_CONSUMER_ENABLED=true
-   Atenção: SQS_CONSUMER_ENABLED foi identificada no worker, mas não constava do .env.example compartilhado. Inclua-a no arquivo de exemplo após confirmar a configuração do módulo de mensageria. Não utilize essas credenciais em produção.
-3. Suba os serviços, execute as migrations e inicie a API:
-   docker compose up -d
-   bun run db:migrate
-   bun run start:dev
-   Por padrão, a API responde em http://localhost:3000. O provisionamento das filas depende da configuração de inicialização do LocalStack no Docker Compose. O script conhecido é docker/localstack/init-sqs.sh.
-Filas locais
-- Principal: wager-transactions.fifo
-- DLQ: wager-transactions-dlq.fifo
-- VisibilityTimeout: 60 segundos
-- maxReceiveCount: 5
-A política de redrive e as configurações FIFO estão no script docker/localstack/init-sqs.sh.
-Endpoints
-Método	Caminho	Finalidade
-GET	/health/live	Liveness
-GET	/health/ready	Readiness
-POST	/wallets	Criar carteira
-GET	/wallets/:walletId	Consultar carteira
-GET	/wallets/:walletId/ledger	Consultar lançamentos
-POST	/wallets/:walletId/reconciliation	Solicitar reconciliação
-POST	/wagering/transactions	Processar transação
-GET	/wagering/transactions/:transactionId	Consultar transação
-GET	/providers/:providerId/wagering/transactions/:externalTransactionId	Consultar por referência externa
+Backend de desafio técnico para processamento de movimentações financeiras de carteiras de jogadores. O foco é **consistência financeira, idempotência, concorrência, rastreabilidade e processamento assíncrono resiliente**.
 
+> **Escopo:** implementação e validação em ambiente local. As credenciais demonstrativas e a infraestrutura LocalStack **não** representam uma configuração de produção.
 
-Os contratos detalhados de resposta, paginação e erros devem ser conferidos nos DTOs e controllers.
-Exemplo: criar carteira
+## Visão geral
+
+- API HTTP com NestJS para criação e consulta de carteiras, transações e Ledger.
+- Processamento financeiro transacional em PostgreSQL, com MikroORM.
+- Operações de aposta e ciclo financeiro com proteção contra duplicação.
+- Recepção assíncrona via AWS SQS FIFO (LocalStack no ambiente de desenvolvimento).
+- **Inbox** para controle de reentregas e conflitos de mensagens.
+- **Transactional Outbox** para persistir eventos junto à transação financeira e publicá-los posteriormente.
+- Retry, tratamento de falhas e dead-letter queue (DLQ).
+- Testes unitários, integração, E2E e carga.
+
+## Stack
+
+| Área | Tecnologia |
+| --- | --- |
+| Linguagem | TypeScript |
+| Framework | NestJS |
+| Banco de dados | PostgreSQL |
+| ORM e migrations | MikroORM |
+| Mensageria | AWS SQS FIFO, emulada por LocalStack |
+| Infraestrutura local | Docker Compose |
+| Testes | Vitest, Supertest e k6 |
+| Scripts e dependências | Bun |
+
+## Pré-requisitos
+
+- Docker com suporte a Compose.
+- Bun e Node.js compatíveis com as versões declaradas pelo projeto.
+- AWS CLI opcional, para inspeção manual das filas.
+- Portas locais necessárias disponíveis, em especial `3000`, `5432` e `4566` quando utilizadas pelo Compose.
+
+## Início rápido
+
+### 1. Instalar e configurar
+
+```bash
+bun install
+cp .env.example .env
+```
+
+Revise o `.env` de acordo com o `docker-compose.yml`/`compose.yml` utilizado. Os valores abaixo são **exemplos de desenvolvimento local**, não segredos de produção:
+
+```dotenv
+NODE_ENV=development
+PORT=3000
+
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_NAME=jungle_wagering
+DATABASE_USER=jungle
+DATABASE_PASSWORD=jungle_dev_password
+
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+SQS_ENDPOINT=http://localhost:4566
+SQS_QUEUE_NAME=wager-transactions.fifo
+SQS_DLQ_NAME=wager-transactions-dlq.fifo
+SQS_CONSUMER_ENABLED=true
+```
+
+> `SQS_CONSUMER_ENABLED` é utilizado no worker. **Confira se essa variável está presente no `.env.example` do repositório**; caso não esteja, inclua-a na configuração local. A configuração exata de execução do consumer deve ser conferida no módulo de mensageria.
+
+### 2. Iniciar dependências e migrar o banco
+
+```bash
+docker compose up -d
+bun run db:migrate
+```
+
+A inicialização das filas locais está associada ao script `docker/localstack/init-sqs.sh`. Confira os logs do LocalStack se as filas não forem provisionadas:
+
+```bash
+docker compose ps
+docker compose logs localstack
+```
+
+O nome do serviço no comando de logs deve corresponder ao declarado no arquivo Compose.
+
+### 3. Iniciar a API
+
+```bash
+bun run start:dev
+```
+
+A aplicação usa `PORT` (padrão `3000`) e **não define prefixo global** de rotas no `main.ts` analisado.
+
+Verifique a disponibilidade:
+
+```bash
+curl -i http://localhost:3000/health/live
+curl -i http://localhost:3000/health/ready
+```
+
+`/health/live` retorna `{ "status": "ok" }`; `/health/ready` consulta o PostgreSQL e retorna `{ "status": "ready", "database": "up" }` quando disponível, ou HTTP 503 quando a verificação falha.
+
+## Endpoints HTTP
+
+| Método | Rota | Finalidade |
+| --- | --- | --- |
+| `GET` | `/health/live` | Liveness |
+| `GET` | `/health/ready` | Readiness do PostgreSQL |
+| `POST` | `/wallets` | Criar carteira |
+| `GET` | `/wallets/:walletId` | Consultar carteira |
+| `GET` | `/wallets/:walletId/ledger` | Consultar lançamentos |
+| `POST` | `/wallets/:walletId/reconciliation` | Solicitar reconciliação |
+| `POST` | `/wagering/transactions` | Processar transação |
+| `GET` | `/wagering/transactions/:transactionId` | Consultar transação |
+| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | Consultar por referência externa |
+
+Os DTOs e controllers são a referência para validações, formatos de resposta, paginação e códigos de erro.
+
+### Exemplo: criar carteira
+
+```bash
 curl -X POST http://localhost:3000/wallets \
   -H 'Content-Type: application/json' \
   -d '{
@@ -67,9 +130,13 @@ curl -X POST http://localhost:3000/wallets \
     "currency": "BRL",
     "initialBalance": "100.00"
   }'
-Guarde o identificador da carteira retornado.
-Exemplo: processar uma BET
-Substitua WALLET_UUID pelo identificador retornado na criação da carteira.
+```
+
+Guarde o identificador retornado e substitua `WALLET_UUID` no exemplo seguinte.
+
+### Exemplo: processar uma aposta (`BET`)
+
+```bash
 curl -X POST http://localhost:3000/wagering/transactions \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: example-bet-001' \
@@ -83,46 +150,126 @@ curl -X POST http://localhost:3000/wagering/transactions \
     "kind": "BET",
     "money": { "amount": "10.00", "currency": "BRL" }
   }'
-A API exige o cabeçalho Idempotency-Key no processamento HTTP. O controller remove espaços nas extremidades e rejeita chaves vazias ou maiores que 255 caracteres.
-Testes e qualidade
-Para testes de integração, mantenha PostgreSQL, LocalStack e o consumidor da API em execução.
+```
+
+O endpoint HTTP exige `Idempotency-Key`; a chave é normalizada nas extremidades e valores vazios ou superiores a 255 caracteres são rejeitados. Reenvios e conflitos são tratados pela lógica de idempotência e pelas restrições de persistência.
+
+## Mensageria local
+
+| Recurso | Configuração observada |
+| --- | --- |
+| Fila de entrada | `wager-transactions.fifo` |
+| DLQ de entrada | `wager-transactions-dlq.fifo` |
+| Timeout de visibilidade | 60 segundos |
+| `maxReceiveCount` | 5 |
+| Eventos publicados pelo Outbox | Fila de eventos separada (`wager-events.fifo`, no ambiente validado) |
+
+O consumidor valida o envelope, controla reentregas via Inbox e só confirma a mensagem após o processamento apropriado. Falhas transitórias podem resultar em nova entrega; mensagens inválidas podem ser encaminhadas à DLQ. A publicação do Outbox ocorre após o commit financeiro.
+
+> A fila de eventos publicada pelo Outbox não deve ser confundida com a fila de entrada. Na execução de carga analisada, **não havia consumidor configurado para drenar a fila de eventos**; o acúmulo nessa fila não significa, por si só, falha na publicação do Outbox.
+
+## Testes e qualidade
+
+Mantenha PostgreSQL e LocalStack disponíveis para os testes que dependem de infraestrutura. Alguns cenários de integração também dependem do consumer ativo; evite executar múltiplas suítes simultaneamente contra a mesma fila.
+
+```bash
 # Testes unitários
-bunx vitest run src tests/unit
+bun run test
 
-# Testes de integração
-bunx vitest run --config vitest.config.integration.ts
+# Integração (PostgreSQL + SQS)
+bun run test:integration
 
-# Tipos, lint e build
-bunx tsc --noEmit
+# E2E (inclui /health/live e /health/ready)
+bun run test:e2e
+
+# Carga HTTP (k6/Docker)
+bun run test:load
+
+# Verificações estáticas e compilação
 bun run lint
+bun run typecheck
 bun run build
-Os cenários de integração exercitam ciclo financeiro, concorrência, idempotência, resiliência e recuperação por retry. O cenário de retry depende do timeout de visibilidade da fila e pode demorar aproximadamente um minuto.
 
-Comandos adicionais disponíveis:
+git diff --check
+```
+
+### Resultado da validação final — 30/10/2026
+
+| Verificação | Resultado observado |
+| --- | --- |
+| Unitários | **26 aprovados** em 4 arquivos |
+| Integração | **10 aprovados** em 6 arquivos |
+| E2E | **2 aprovados** (`/health/live` e `/health/ready`) |
+| **Total** | **38 testes aprovados** |
+| Lint | 0 erros, 0 avisos (53 arquivos) |
+| Typecheck | Sem erros (57 arquivos) |
+| Build NestJS | Concluído |
+| `git diff --check` | Sem apontamentos |
+
+Os cenários cobrem ciclo `BET → WIN → REFUND`, `ROLLBACK`, idempotência, concorrência, recuperação por retry, tratamento de JSON inválido/DLQ, configuração de fila e disponibilidade da API. O cenário de retry pode aguardar aproximadamente um minuto devido ao timeout de visibilidade.
+
+### Resultados de carga (k6)
+
+Resultados **observados em execuções locais**, não metas de SLA ou benchmark de produção:
+
+| Métrica | Última execução relatada |
+| --- | ---: |
+| VUs | 2 |
+| Duração | 15 s |
+| Requisições HTTP | 1.162 |
+| Throughput | 77,37 req/s |
+| Erros HTTP | 0% |
+| Latência p50 | 16,72 ms |
+| Latência p95 | 50,56 ms |
+| Latência p99 | 112,70 ms |
+| Latência máxima | 1,67 s |
+
+Uma execução anterior observou **3.118 requisições / 15 s (207,77 req/s)**, com p95 de **18,82 ms** e 0% de erros HTTP. As condições entre execuções não foram controladas para comparação causal; portanto, **não se atribui a diferença de throughput exclusivamente à mudança do Outbox**.
+
+No publisher do Outbox, o aumento do lote de **20 para 100** registros foi acompanhado de aumento da vazão observada de aproximadamente **4 para 20 eventos/s**. Isso ainda é inferior à taxa de geração de eventos sob carga sustentada: uma `BET` bem-sucedida gerou dois eventos nos cenários analisados. O backlog pode crescer temporariamente, exigindo monitoramento e dimensionamento para cargas superiores.
+
+Veja [ARCHITECTURE.md](./ARCHITECTURE.md) para interpretação das garantias e limitações.
+
+## Comandos operacionais
+
+```bash
 bun run db:status
+bun run db:migrate
 bun run db:rollback
 bun run start:prod
-Nota: start:prod requer o build e a configuração apropriada de variáveis de ambiente.
-Arquitetura
-Consulte [ARCHITECTURE.md](./ARCHITECTURE.md) para conhecer as decisões de domínio, persistência e mensageria, bem como os trade-offs, limites de garantia e melhorias futuras.
-Referências
-Documentação oficial
-- NestJS — Validation
-- TypeScript — Type Assertions
-- MikroORM — Transactions
-- PostgreSQL — Explicit Locking
-- PostgreSQL — Transaction Isolation
-- AWS SQS — FIFO Queues
-- AWS SQS — Visibility Timeout
-- AWS SQS — Dead-Letter Queues
-- LocalStack — SQS
-- Vitest
-- Decimal.js
-Discussões consultadas e materiais complementares
-- Stack Overflow — TypeScript e Record<string, string>
-- GitHub — Slonik issue #452
-- Transactional Outbox Pattern
-- Idempotent Consumer Pattern
-Os dois primeiros links foram compartilhados como pesquisas realizadas durante o desenvolvimento. Os demais são referências de documentação e estudo, sem implicar que cada solução tenha sido copiada ou implementada integralmente.
-Licença
+```
+
+`start:prod` requer build prévio e variáveis de ambiente apropriadas. **Não execute rollback em um banco com dados relevantes sem avaliar o efeito da migration.**
+
+## Estrutura e decisões
+
+A solução separa domínio, aplicação, infraestrutura e interfaces HTTP. O PostgreSQL é a fonte de verdade financeira; o SQS é um mecanismo de entrega **at-least-once** e a idempotência de negócio protege contra efeitos duplicados. O padrão Outbox reduz a janela de inconsistência entre commit financeiro e publicação assíncrona, sem transformar o sistema inteiro em *exactly-once*.
+
+Consulte [ARCHITECTURE.md](./ARCHITECTURE.md) para fluxos, decisões, limites, evidências de testes e melhorias futuras.
+
+## Limitações de escopo
+
+- O ambiente apresentado utiliza credenciais de teste e LocalStack.
+- Autenticação/autorização, gestão de segredos, TLS, rate limiting e observabilidade de produção requerem avaliação adicional.
+- O publisher Outbox demonstrou funcionamento e escoamento de backlog, mas a vazão observada não acompanha cargas HTTP intensas de forma sustentada.
+- A operação de DLQ exige procedimentos de inspeção e replay controlado.
+- As métricas de carga não representam capacidade garantida em produção.
+
+## Referências
+
+- [NestJS — Validation](https://docs.nestjs.com/techniques/validation)
+- [MikroORM — Transactions](https://mikro-orm.io/docs/transactions)
+- [PostgreSQL — Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)
+- [PostgreSQL — Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+- [AWS SQS — FIFO](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html)
+- [AWS SQS — Visibility Timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html)
+- [AWS SQS — DLQ](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html)
+- [LocalStack — SQS](https://docs.localstack.cloud/aws/services/sqs/)
+- [Vitest](https://vitest.dev/guide/)
+- [Decimal.js](https://mikemcl.github.io/decimal.js/)
+- [Transactional Outbox](https://microservices.io/patterns/data/transactional-outbox.html)
+- [Idempotent Consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html)
+
+## Licença e uso
+
 Projeto de desafio técnico para avaliação. Consulte as condições de uso e distribuição definidas pelo responsável pelo repositório.
