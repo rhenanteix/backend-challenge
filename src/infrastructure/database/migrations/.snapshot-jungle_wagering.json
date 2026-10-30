@@ -748,6 +748,19 @@
         },
         {
           "columnNames": [
+            "provider_id",
+            "reference_external_transaction_id",
+            "kind"
+          ],
+          "composite": true,
+          "constraint": false,
+          "keyName": "uq_wager_active_reversal_reference",
+          "primary": false,
+          "unique": true,
+          "where": "((kind)::text = ANY ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) AND ((status)::text = ANY ((ARRAY['PENDING'::character varying, 'PENDING_REFERENCE'::character varying, 'PROCESSED'::character varying])::text[]))"
+        },
+        {
+          "columnNames": [
             "idempotency_key"
           ],
           "composite": false,
