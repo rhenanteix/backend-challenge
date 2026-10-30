@@ -1,4 +1,3 @@
-
 import { createHash } from 'node:crypto';
 
 import {
@@ -15,6 +14,7 @@ import {
   DeleteMessageCommand,
   GetQueueUrlCommand,
   ReceiveMessageCommand,
+  SendMessageCommand,
   SQSClient,
   type Message,
 } from '@aws-sdk/client-sqs';
@@ -28,41 +28,23 @@ import {
   WAGER_CONSUMER_NAME,
 } from '../sqs.constants.js';
 
-/**
- * Contrato das mensagens recebidas pelo SQS.
- */
+import { classifyWagerError } from '../errors/classify-wager-error.js';
+
+import { InvalidWagerMessageError } from '../errors/invalid-wager-message.error.js';
+
 type WagerEnvelope = {
   schemaVersion: 1;
   eventId: string;
   payload: ProcessWagerInput;
 };
 
-/**
- * Representação do registro da Inbox.
- */
 type InboxRow = {
   payload_hash: string;
   processed_at: Date | null;
 };
 
 /**
- * Erro de mensagem inválida.
- *
- * Não devemos processar nem confirmar mensagens
- * que não respeitam o contrato.
- */
-class InvalidWagerMessageError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'InvalidWagerMessageError';
-  }
-}
-
-/**
- * Serialização determinística.
- *
- * Ordena as chaves dos objetos para que a ordem
- * original das propriedades não altere o hash.
+ * Serialização determinística para hashing.
  */
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -86,25 +68,18 @@ function canonicalize(value: unknown): unknown {
 }
 
 /**
- * Hash SHA-256 do payload de negócio.
+ * Hash SHA-256 do payload financeiro.
  */
 function calculatePayloadHash(
   payload: ProcessWagerInput,
 ): string {
-  const canonicalJson = JSON.stringify(
-    canonicalize(payload),
-  );
-
   return createHash('sha256')
-    .update(canonicalJson)
+    .update(JSON.stringify(canonicalize(payload)))
     .digest('hex');
 }
 
 /**
- * Validação básica do envelope.
- *
- * O caso de uso continua responsável pelas
- * validações financeiras e de domínio.
+ * Validação do envelope SQS.
  */
 function parseEnvelope(body: string): WagerEnvelope {
   let parsed: unknown;
@@ -142,8 +117,8 @@ function parseEnvelope(body: string): WagerEnvelope {
     );
   }
 
-  // https://stackoverflow.com/questions/57280207/typescript-cannot-cast-down-to-generic-recordstring-string-type
-  const payload = envelope.payload as unknown as ProcessWagerInput;
+  const payload =
+    envelope.payload as unknown as ProcessWagerInput;
 
   if (
     typeof payload.idempotencyKey !== 'string' ||
@@ -172,14 +147,13 @@ function parseEnvelope(body: string): WagerEnvelope {
   return {
     schemaVersion: 1,
     eventId: envelope.eventId,
-    payload: payload as WagerEnvelope['payload'],
+    payload,
   };
 }
 
 @Injectable()
 export class WagerConsumer
   implements OnModuleInit, OnModuleDestroy {
-
   private readonly logger = new Logger(
     WagerConsumer.name,
   );
@@ -187,6 +161,8 @@ export class WagerConsumer
   private running = false;
 
   private queueUrl = '';
+
+  private dlqUrl = '';
 
   private loopPromise?: Promise<void>;
 
@@ -197,10 +173,10 @@ export class WagerConsumer
     private readonly em: EntityManager,
 
     private readonly processor: ProcessWagerTransaction,
-  ) {}
+  ) { }
 
   /**
-   * Inicia o consumidor junto com o NestJS.
+   * Inicialização das filas.
    */
   async onModuleInit(): Promise<void> {
     if (process.env.SQS_CONSUMER_ENABLED !== 'true') {
@@ -212,39 +188,53 @@ export class WagerConsumer
       process.env.SQS_WAGER_QUEUE_NAME ??
       'wager-transactions.fifo';
 
-    const result = await this.sqs.send(
+    const dlqName =
+      process.env.SQS_WAGER_DLQ_NAME ??
+      'wager-transactions-dlq.fifo';
+
+    const queueResult = await this.sqs.send(
       new GetQueueUrlCommand({
         QueueName: queueName,
       }),
     );
 
-    if (!result.QueueUrl) {
+    if (!queueResult.QueueUrl) {
       throw new Error('SQS_QUEUE_URL_NOT_FOUND');
     }
 
-    this.queueUrl = result.QueueUrl;
+    const dlqResult = await this.sqs.send(
+      new GetQueueUrlCommand({
+        QueueName: dlqName,
+      }),
+    );
+
+    if (!dlqResult.QueueUrl) {
+      throw new Error('SQS_DLQ_URL_NOT_FOUND');
+    }
+
+    this.queueUrl = queueResult.QueueUrl;
+    this.dlqUrl = dlqResult.QueueUrl;
+
     this.running = true;
 
     this.logger.log(
-      `SQS consumer started for ${queueName}`,
+      `SQS consumer started: queue=${queueName} dlq=${dlqName}`,
     );
 
     this.loopPromise = this.poll();
   }
 
   /**
-   * Interrompe novos recebimentos.
+   * Encerramento gracioso.
    */
   async onModuleDestroy(): Promise<void> {
     this.running = false;
+
     await this.loopPromise;
   }
 
   /**
-   * Loop principal.
-   *
-   * Uma mensagem por recebimento facilita
-   * o controle de falhas e do visibility timeout.
+   * Polling SQS.
    */
   private async poll(): Promise<void> {
     while (this.running) {
@@ -280,10 +270,7 @@ export class WagerConsumer
   }
 
   /**
-   * Trata erros sem encerrar o loop.
-   *
-   * Falhas não recebem ACK e serão entregues
-   * novamente pelo SQS.
+   * Tratamento inteligente de falhas.
    */
   private async handleSafely(
     message: Message,
@@ -291,24 +278,94 @@ export class WagerConsumer
     try {
       await this.handle(message);
     } catch (error) {
-      const code =
-        error instanceof Error
-          ? error.message
-          : String(error);
+      const classification = classifyWagerError(error);
 
       this.logger.error(
-        `SQS processing failed: messageId=${message.MessageId} code=${code}`,
+        `SQS processing failed: messageId=${message.MessageId} category=${classification.category} code=${classification.code}`,
       );
 
-      // Sem DeleteMessage:
-      // a mensagem permanece elegível para retry.
-      // A redrive policy enviará à DLQ quando
-      // o limite de recebimentos for atingido.
+      if (classification.category === 'PERMANENT') {
+        try {
+          await this.quarantine(
+            message,
+            classification.code,
+          );
+        } catch (quarantineError) {
+          this.logger.error(
+            `SQS quarantine failed: messageId=${message.MessageId}`,
+            quarantineError instanceof Error
+              ? quarantineError.stack
+              : String(quarantineError),
+          );
+        }
+      }
+
+      // TRANSIENT: sem ACK.
+      // PERMANENT com falha na quarentena: sem ACK.
     }
   }
 
   /**
-   * Processamento transacional da mensagem.
+   * Encaminha erros permanentes para a DLQ.
+   *
+   * O ACK acontece somente após o envio
+   * da mensagem à fila de quarentena.
+   */
+  private async quarantine(
+    message: Message,
+    errorCode: string,
+  ): Promise<void> {
+    if (
+      !message.Body ||
+      !message.ReceiptHandle ||
+      !message.MessageId
+    ) {
+      throw new Error('INVALID_SQS_MESSAGE');
+    }
+
+    await this.sqs.send(
+      new SendMessageCommand({
+        QueueUrl: this.dlqUrl,
+        MessageBody: message.Body,
+        MessageGroupId:
+          message.Attributes?.MessageGroupId ??
+          'invalid-wager',
+        MessageDeduplicationId:
+          `quarantine-${message.MessageId}`,
+        MessageAttributes: {
+          errorCode: {
+            DataType: 'String',
+            StringValue: errorCode,
+          },
+          originalMessageId: {
+            DataType: 'String',
+            StringValue: message.MessageId,
+          },
+          failedAt: {
+            DataType: 'String',
+            StringValue: new Date().toISOString(),
+          },
+        },
+      }),
+    );
+
+    await this.sqs.send(
+      new DeleteMessageCommand({
+        QueueUrl: this.queueUrl,
+        ReceiptHandle: message.ReceiptHandle,
+      }),
+    );
+
+    this.logger.warn(
+      `SQS message quarantined: messageId=${message.MessageId} code=${errorCode}`,
+    );
+  }
+
+  /**
+   * Processamento transacional.
+   *
+   * Inbox + operação financeira compartilham
+   * a mesma transação PostgreSQL.
    */
   private async handle(
     message: Message,
@@ -329,10 +386,6 @@ export class WagerConsumer
       envelope.payload,
     );
 
-    /**
-     * Cada mensagem utiliza seu próprio
-     * EntityManager.
-     */
     const em = this.em.fork();
 
     await em.transactional(async (tx) => {
@@ -352,9 +405,6 @@ export class WagerConsumer
 
       /**
        * 1. Registrar recebimento.
-       *
-       * A PK composta impede duplicidade
-       * de (consumer_name, message_id).
        */
       await execute(
         `INSERT INTO inbox_messages (
@@ -374,10 +424,7 @@ export class WagerConsumer
       );
 
       /**
-       * 2. Bloquear registro da Inbox.
-       *
-       * Dois workers não podem processar
-       * simultaneamente o mesmo eventId.
+       * 2. Bloquear a Inbox.
        */
       const rows = await execute<InboxRow[]>(
         `SELECT
@@ -400,10 +447,7 @@ export class WagerConsumer
       const inbox = rows[0];
 
       /**
-       * 3. Comparar o hash.
-       *
-       * Mesmo eventId com payload diferente
-       * é conflito, não replay.
+       * 3. Detectar conflito de payload.
        */
       if (inbox.payload_hash !== payloadHash) {
         throw new InvalidWagerMessageError(
@@ -412,10 +456,7 @@ export class WagerConsumer
       }
 
       /**
-       * 4. Mensagem já processada.
-       *
-       * Não executamos a operação financeira
-       * novamente.
+       * 4. Replay de mensagem processada.
        */
       if (inbox.processed_at) {
         this.logger.log(
@@ -427,9 +468,6 @@ export class WagerConsumer
 
       /**
        * 5. Processamento financeiro.
-       *
-       * Utiliza a MESMA transação PostgreSQL
-       * aberta pela Inbox.
        */
       await this.processor.executeInTransaction(
         tx,
@@ -437,10 +475,7 @@ export class WagerConsumer
       );
 
       /**
-       * 6. Marcar a Inbox como processada.
-       *
-       * Se qualquer operação anterior falhar,
-       * toda a transação será revertida.
+       * 6. Marcar Inbox como processada.
        */
       await execute(
         `UPDATE inbox_messages
@@ -456,10 +491,6 @@ export class WagerConsumer
 
     /**
      * 7. ACK somente após o commit.
-     *
-     * Se o processo morrer antes deste ponto,
-     * a mensagem será entregue novamente,
-     * mas a Inbox impedirá novo débito.
      */
     await this.sqs.send(
       new DeleteMessageCommand({
