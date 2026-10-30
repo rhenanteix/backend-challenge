@@ -119,6 +119,9 @@ export class OutboxPublisher {
           }
         }
       });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Outbox publish failed: ${message}`);
     } finally {
       this.publishing = false;
     }
