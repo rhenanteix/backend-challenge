@@ -11,7 +11,7 @@ export class Money {
   private constructor(
     private readonly value: Decimal,
     public readonly currency: string,
-  ) {}
+  ) { }
 
   static from(props: MoneyProps): Money {
     if (!/^(0|[1-9]\d*)(\.\d{1,2})?$/.test(props.amount)) {
@@ -73,7 +73,7 @@ export class Money {
   }
 
   isPositive(): boolean {
-    return this.value.isPositive();
+    return this.value.greaterThan(0);
   }
 
   isNegative(): boolean {

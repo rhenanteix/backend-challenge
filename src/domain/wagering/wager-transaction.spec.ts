@@ -1,5 +1,5 @@
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import { Money } from '../money/money.js';
 import {
   WagerTransaction,
